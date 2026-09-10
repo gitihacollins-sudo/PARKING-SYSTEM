@@ -1,31 +1,7 @@
-# Modern Parking System — Algorithms, Data Structures and Database Design
+ Modern Parking System — Algorithms, Data Structures and Database Design
 
-## 1. Problem Statement
 
-We need to develop a **modern parking system** with the following functions:
-
-1. Show the availability of parking slots before a vehicle enters.
-2. Allow a vehicle to enter only when a parking slot is available.
-3. Record each vehicle that enters the parking lot.
-4. Assign a parking slot to the vehicle.
-5. Record the vehicle's entry time.
-6. When the vehicle exits, record its exit time.
-7. Calculate how long the vehicle stayed.
-8. Calculate the amount of money the vehicle should pay.
-9. Make the parking slot available again after the vehicle leaves.
-10. Increase the number of available parking slots after a vehicle exits.
-
----
-
-# 2. Algorithm
-
-## 2.1 Meaning of an Algorithm
-
-An **algorithm** is a clear, ordered set of steps used to solve a problem.
-
-For the parking system, the algorithm describes exactly what the system should do when a vehicle arrives and when it leaves.
-
-## 2.2 Parking System Algorithm
+ 1. 
 
 ### Vehicle Entry
 
