@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS ParkingRecords (
     SlotNo INTEGER NOT NULL REFERENCES ParkingSlots(SlotID),
     EntryTime TEXT NOT NULL,
     ExitTime TEXT,
-    AmountPaid INTEGER CHECK (AmountPaid IS NULL OR AmountPaid >= 0)
+    AmountPaid REAL CHECK (AmountPaid IS NULL OR AmountPaid >= 0)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_record_per_slot

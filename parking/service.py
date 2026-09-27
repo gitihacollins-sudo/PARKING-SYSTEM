@@ -1,7 +1,7 @@
-import math
 import re
 import sqlite3
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 
 from parking.database import connect, get_overview, write_transaction
 
@@ -23,6 +23,13 @@ def normalize_registration(registration):
 
 def parking_overview(database_path):
     return get_overview(database_path)
+
+
+def calculate_parking_fee(duration_seconds):
+    elapsed_hours = Decimal(max(0, duration_seconds)) / Decimal(3600)
+    return (elapsed_hours * HOURLY_RATE_KSH).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
 
 
 def park_vehicle(database_path, registration):
@@ -72,8 +79,9 @@ def park_vehicle(database_path, registration):
         raise ParkingError("The parking database could not save this entry. Please try again.") from error
 
 
-def check_out_vehicle(database_path, registration):
+def check_out_vehicle(database_path, registration, exit_time=None):
     vehicle = normalize_registration(registration)
+    exit_time = exit_time or datetime.now().astimezone()
     try:
         with connect(database_path) as connection:
             with write_transaction(connection):
@@ -85,23 +93,19 @@ def check_out_vehicle(database_path, registration):
                 if record is None:
                     raise ParkingError(f"No active parking record found for {vehicle}.")
 
-                exit_time = datetime.now().astimezone()
                 entry_time = datetime.fromisoformat(record["EntryTime"])
-                duration_seconds = max(
-                    0, math.ceil((exit_time - entry_time).total_seconds())
-                )
-                billable_hours = max(1, math.ceil(duration_seconds / 3600))
-                amount_due = billable_hours * HOURLY_RATE_KSH
-                duration_minutes = duration_seconds // 60
-                hours, minutes = divmod(duration_minutes, 60)
-                duration = f"{hours}h {minutes}m"
+                duration_seconds = max(0, int((exit_time - entry_time).total_seconds()))
+                amount_due = calculate_parking_fee(duration_seconds)
+                hours, remainder = divmod(duration_seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                duration = f"{hours}h {minutes}m {seconds}s"
 
                 connection.execute(
                     """UPDATE ParkingRecords
                        SET ExitTime = ?, AmountPaid = ? WHERE RecordID = ?""",
                     (
                         exit_time.isoformat(timespec="seconds"),
-                        amount_due,
+                        float(amount_due),
                         record["RecordID"],
                     ),
                 )
@@ -118,7 +122,6 @@ def check_out_vehicle(database_path, registration):
             "slot_id": record["SlotNo"],
             "duration": duration,
             "duration_seconds": duration_seconds,
-            "billable_hours": billable_hours,
             "amount_due": amount_due,
             "exit_time": exit_time.strftime("%b %d, %Y %H:%M:%S %Z"),
             "available_slots": parking_overview(database_path)["available_count"],

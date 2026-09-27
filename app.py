@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+import secrets
+from datetime import datetime
 
 from flask import Flask, flash, redirect, render_template, request, url_for
 
@@ -13,9 +15,9 @@ BASE_DIR = Path(__file__).resolve().parent
 def create_app(test_config=None):
 	app = Flask(__name__, template_folder="parking/templates", static_folder="parking/static")
 	app.config.from_mapping(
-		SECRET_KEY=os.environ.get("PARKING_SECRET_KEY", "local-development-key-change-me"),
+		SECRET_KEY=os.environ.get("PARKING_SECRET_KEY") or secrets.token_hex(32),
 		DATABASE=os.environ.get("PARKING_DATABASE", str(BASE_DIR / "instance" / "parking.db")),
-		SLOT_COUNT=int(os.environ.get("PARKING_SLOT_COUNT", "24")),
+		SLOT_COUNT=int(os.environ.get("PARKING_SLOT_COUNT", "10")),
 	)
 	if test_config:
 		app.config.update(test_config)
@@ -25,7 +27,11 @@ def create_app(test_config=None):
 	@app.get("/")
 	def dashboard():
 		overview = parking_overview(app.config["DATABASE"])
-		return render_template("dashboard.html", **overview)
+		return render_template(
+			"dashboard.html",
+			today=datetime.now().astimezone().strftime("%a, %d %b %Y"),
+			**overview,
+		)
 
 	@app.post("/entry")
 	def entry():
@@ -48,7 +54,7 @@ def create_app(test_config=None):
 			)
 			flash(
 				f"{receipt['registration']} checked out. Duration: {receipt['duration']}. "
-				f"Amount due: KSh {receipt['amount_due']}. "
+				f"Amount due: KSh {receipt['amount_due']:.2f}. "
 				f"Available spaces: {receipt['available_slots']}.",
 				"success",
 			)
