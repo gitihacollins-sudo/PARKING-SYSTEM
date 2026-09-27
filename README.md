@@ -50,7 +50,7 @@ SQLite creates the documented `ParkingSlots` (`SlotID`, `Status`) and `ParkingRe
 
 ## Tests
 
-Run the service tests with:
+Run the service and web application tests with:
 
 ```powershell
 python -m unittest discover -s tests -v

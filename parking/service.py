@@ -22,7 +22,25 @@ def normalize_registration(registration):
 
 
 def parking_overview(database_path):
-    return get_overview(database_path)
+    overview = get_overview(database_path)
+    for record in overview["recent_records"]:
+        if record["ExitTime"] is None:
+            record["Duration"] = "In progress"
+        else:
+            entry_time = datetime.fromisoformat(record["EntryTime"])
+            exit_time = datetime.fromisoformat(record["ExitTime"])
+            record["Duration"] = format_duration(elapsed_seconds(entry_time, exit_time))
+    return overview
+
+
+def elapsed_seconds(entry_time, exit_time):
+    return max(0, int((exit_time - entry_time).total_seconds()))
+
+
+def format_duration(duration_seconds):
+    hours, remainder = divmod(duration_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}h {minutes}m {seconds}s"
 
 
 def calculate_parking_fee(duration_seconds):
@@ -81,7 +99,7 @@ def park_vehicle(database_path, registration):
 
 def check_out_vehicle(database_path, registration, exit_time=None):
     vehicle = normalize_registration(registration)
-    exit_time = exit_time or datetime.now().astimezone()
+    exit_time = (exit_time or datetime.now().astimezone()).replace(microsecond=0)
     try:
         with connect(database_path) as connection:
             with write_transaction(connection):
@@ -94,11 +112,12 @@ def check_out_vehicle(database_path, registration, exit_time=None):
                     raise ParkingError(f"No active parking record found for {vehicle}.")
 
                 entry_time = datetime.fromisoformat(record["EntryTime"])
-                duration_seconds = max(0, int((exit_time - entry_time).total_seconds()))
+                if exit_time < entry_time:
+                    raise ParkingError("Exit time cannot be earlier than entry time.")
+
+                duration_seconds = elapsed_seconds(entry_time, exit_time)
                 amount_due = calculate_parking_fee(duration_seconds)
-                hours, remainder = divmod(duration_seconds, 3600)
-                minutes, seconds = divmod(remainder, 60)
-                duration = f"{hours}h {minutes}m {seconds}s"
+                duration = format_duration(duration_seconds)
 
                 connection.execute(
                     """UPDATE ParkingRecords

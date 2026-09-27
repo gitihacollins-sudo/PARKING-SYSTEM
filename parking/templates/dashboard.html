@@ -116,9 +116,9 @@
       <section class="data-panel activity-panel" id="activity">
         <div class="section-heading"><div><p class="eyebrow">TRANSACTION LOG</p><h2>Recent activity</h2></div><span class="table-caption">Latest 8 records</span></div>
         {% if recent_records %}
-          <div class="table-wrap"><table><thead><tr><th>VEHICLE</th><th>SLOT</th><th>ENTRY</th><th>EXIT</th><th>AMOUNT PAID</th><th>STATUS</th></tr></thead><tbody>
+          <div class="table-wrap"><table><thead><tr><th>VEHICLE</th><th>SLOT</th><th>ENTRY</th><th>EXIT</th><th>DURATION</th><th>AMOUNT PAID</th><th>STATUS</th></tr></thead><tbody>
             {% for record in recent_records %}
-              <tr><td class="registration-cell">{{ record.RegistrationNumber }}</td><td><span class="table-slot">{{ '%02d'|format(record.SlotNo) }}</span></td><td>{{ record.EntryTime }}</td><td>{{ record.ExitTime or '—' }}</td><td>{% if record.AmountPaid is not none %}KSh {{ '%.2f'|format(record.AmountPaid) }}{% else %}—{% endif %}</td><td><span class="record-status {{ 'status-active' if record.ExitTime is none else 'status-complete' }}">{{ 'Active' if record.ExitTime is none else 'Complete' }}</span></td></tr>
+              <tr><td class="registration-cell">{{ record.RegistrationNumber }}</td><td><span class="table-slot">{{ '%02d'|format(record.SlotNo) }}</span></td><td>{{ record.EntryTime }}</td><td>{{ record.ExitTime or '—' }}</td><td>{{ record.Duration }}</td><td>{% if record.AmountPaid is not none %}KSh {{ '%.2f'|format(record.AmountPaid) }}{% else %}—{% endif %}</td><td><span class="record-status {{ 'status-active' if record.ExitTime is none else 'status-complete' }}">{{ 'Active' if record.ExitTime is none else 'Complete' }}</span></td></tr>
             {% endfor %}
           </tbody></table></div>
         {% else %}

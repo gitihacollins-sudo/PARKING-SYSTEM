@@ -1,7 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from os import environ
 from pathlib import Path
@@ -34,6 +34,8 @@ class ParkingServiceTests(unittest.TestCase):
         self.assertEqual(ticket["slot_id"], 1)
         self.assertEqual(overview["available_count"], 1)
         self.assertEqual(overview["active_records"][0]["SlotNo"], 1)
+        self.assertTrue(datetime.fromisoformat(overview["active_records"][0]["EntryTime"]))
+        self.assertEqual(overview["slots"][0]["Status"], "Occupied")
 
     def test_entry_is_rejected_when_lot_is_full(self):
         park_vehicle(self.database_path, "KBC 456B")
@@ -49,7 +51,7 @@ class ParkingServiceTests(unittest.TestCase):
     def test_exit_completes_record_and_releases_slot(self):
         ticket = park_vehicle(self.database_path, "KBC 456B")
         entry_time = datetime(2025, 1, 1, 8, tzinfo=timezone.utc)
-        exit_time = datetime(2025, 1, 1, 9, 30, tzinfo=timezone.utc)
+        exit_time = datetime(2025, 1, 1, 9, 30, 0, 900000, tzinfo=timezone.utc)
         with connect(self.database_path) as connection:
             connection.execute(
                 "UPDATE ParkingRecords SET EntryTime = ? "
@@ -66,16 +68,44 @@ class ParkingServiceTests(unittest.TestCase):
         self.assertEqual(overview["active_records"], [])
         completed = overview["recent_records"][0]
         self.assertIsNotNone(completed["ExitTime"])
+        self.assertEqual(completed["ExitTime"], "2025-01-01T09:30:00+00:00")
+        self.assertEqual(
+            datetime.fromisoformat(completed["ExitTime"]),
+            exit_time.replace(microsecond=0),
+        )
         self.assertEqual(Decimal(str(completed["AmountPaid"])), Decimal("75.00"))
+        self.assertEqual(completed["Duration"], receipt["duration"])
 
-    def test_fee_prorates_short_one_hour_and_multi_hour_durations(self):
+    def test_fee_prorates_one_minute_thirty_minutes_one_hour_ninety_minutes_and_multiple_hours(self):
         self.assertEqual(calculate_parking_fee(60), Decimal("0.83"))
+        self.assertEqual(calculate_parking_fee(1800), Decimal("25.00"))
         self.assertEqual(calculate_parking_fee(3600), Decimal("50.00"))
+        self.assertEqual(calculate_parking_fee(5400), Decimal("75.00"))
         self.assertEqual(calculate_parking_fee(9000), Decimal("125.00"))
 
     def test_exit_without_active_record_is_rejected(self):
         with self.assertRaisesRegex(ParkingError, "No active parking record"):
             check_out_vehicle(self.database_path, "KBC 456B")
+
+    def test_exit_before_entry_is_rejected_without_releasing_slot(self):
+        park_vehicle(self.database_path, "KBC 456B")
+        entry_time = datetime(2025, 1, 1, 8, tzinfo=timezone.utc)
+        with connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE ParkingRecords SET EntryTime = ? "
+                "WHERE RegistrationNumber = ? AND ExitTime IS NULL",
+                (entry_time.isoformat(), "KBC 456B"),
+            )
+        with self.assertRaisesRegex(ParkingError, "cannot be earlier"):
+            check_out_vehicle(
+                self.database_path,
+                "KBC 456B",
+                entry_time - timedelta(seconds=1),
+            )
+        overview = parking_overview(self.database_path)
+        self.assertEqual(overview["occupied_count"], 1)
+        self.assertEqual(len(overview["active_records"]), 1)
+        self.assertIsNone(overview["recent_records"][0]["ExitTime"])
 
     def test_empty_or_invalid_registration_is_rejected(self):
         for registration in ("", "   ", "ABC!123"):
@@ -98,8 +128,9 @@ class ParkingServiceTests(unittest.TestCase):
             datetime(2025, 1, 1, 9, tzinfo=timezone.utc),
         )
         park_vehicle(self.database_path, "KDA 789C")
-        initialize_database(self.database_path, 2)
+        initialize_database(self.database_path, 5)
         overview = parking_overview(self.database_path)
+        self.assertEqual(overview["total_count"], 2)
         self.assertEqual(overview["occupied_count"], 1)
         self.assertEqual(overview["available_count"], 1)
         self.assertEqual(overview["active_records"][0]["RegistrationNumber"], "KDA 789C")
@@ -109,6 +140,7 @@ class ParkingServiceTests(unittest.TestCase):
         )
         self.assertIsNotNone(completed["ExitTime"])
         self.assertEqual(Decimal(str(completed["AmountPaid"])), Decimal("50.00"))
+        self.assertEqual(completed["Duration"], "1h 0m 0s")
 
     def test_schema_has_documented_tables_and_foreign_key(self):
         connection = sqlite3.connect(self.database_path)
@@ -123,6 +155,14 @@ class ParkingServiceTests(unittest.TestCase):
                 row[1]
                 for row in connection.execute("PRAGMA table_info(ParkingRecords)")
             }
+            slot_primary_keys = {
+                row[1]: row[5]
+                for row in connection.execute("PRAGMA table_info(ParkingSlots)")
+            }
+            record_primary_keys = {
+                row[1]: row[5]
+                for row in connection.execute("PRAGMA table_info(ParkingRecords)")
+            }
             foreign_keys = connection.execute(
                 "PRAGMA foreign_key_list(ParkingRecords)"
             ).fetchall()
@@ -133,6 +173,8 @@ class ParkingServiceTests(unittest.TestCase):
             {"RecordID", "RegistrationNumber", "SlotNo", "EntryTime", "ExitTime", "AmountPaid"}
             .issubset(columns)
         )
+        self.assertEqual(slot_primary_keys["SlotID"], 1)
+        self.assertEqual(record_primary_keys["RecordID"], 1)
         self.assertEqual(foreign_keys[0][2:5], ("ParkingSlots", "SlotNo", "SlotID"))
 
     def test_database_constraints_reject_invalid_foreign_key_and_duplicate_active_rows(self):
@@ -225,6 +267,10 @@ class ParkingWebTests(unittest.TestCase):
             "/entry", data={"registration": ""}, follow_redirects=True
         )
         self.assertIn(b"Enter a valid registration", invalid.data)
+        invalid_format = self.client.post(
+            "/entry", data={"registration": "KBC!456B"}, follow_redirects=True
+        )
+        self.assertIn(b"Enter a valid registration", invalid_format.data)
 
         response = self.client.post(
             "/entry", data={"registration": "KBC 456B"}, follow_redirects=True
@@ -232,6 +278,7 @@ class ParkingWebTests(unittest.TestCase):
         self.assertIn(b"KBC 456B parked in slot 1", response.data)
         self.assertIn(b"Available spaces: 1", response.data)
         self.assertIn(b"Occupied", response.data)
+        self.assertIn(b"In progress", response.data)
 
         duplicate = self.client.post(
             "/entry", data={"registration": "KBC 456B"}, follow_redirects=True
@@ -258,6 +305,12 @@ class ParkingWebTests(unittest.TestCase):
         self.assertIn(b"Amount due: KSh", checkout.data)
         self.assertIn(b"Available spaces: 1", checkout.data)
         self.assertIn(b"Complete", checkout.data)
+        completed = next(
+            record for record in parking_overview(self.database_path)["recent_records"]
+            if record["RegistrationNumber"] == "KBC 456B"
+        )
+        self.assertIn(completed["Duration"].encode(), checkout.data)
+        self.assertIn(f"KSh {completed['AmountPaid']:.2f}".encode(), checkout.data)
 
 
 if __name__ == "__main__":
