@@ -1,0 +1,1 @@
+"""Parking management application package."""
