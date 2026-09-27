@@ -889,3 +889,174 @@ Increase available slots
 ```
 
 This is the core logic of the modern parking system discussed.
+
+---
+
+# 26. Python Data Structures and SQLite Implementation
+
+The concepts above map to Python and SQLite as follows:
+
+| Need | Python / SQLite choice | Reason |
+|---|---|---|
+| Find a free slot | SQLite query, optionally indexed by status | The database remains the source of truth, including when multiple attendants use the system. |
+| Handle the current vehicle during a function | Dictionary | Named fields such as `registration` and `entry_at` are easier to understand than positional values. |
+| Keep a waiting line, if the lot supports one | `collections.deque` | Appending at the rear and serving from the front are efficient FIFO operations. |
+| Preserve visits after the program closes | SQLite tables | Python lists and dictionaries exist only while the process is running. |
+
+For a small in-memory demonstration, a list of slot records and a dictionary keyed by registration can work. For a real system, do not use those in-memory collections as the authority for occupancy: separate application processes could make conflicting decisions. Store occupancy in SQLite and calculate availability from the slots table. A waiting queue is optional and should not be confused with a queue of parked vehicles.
+
+## 26.1 SQLite Database Schema
+
+Each arrival creates a parking session. Exited sessions are retained as history; only sessions with no `exit_at` are active. Slot status is updated in the same database transaction as the session so the two stay consistent.
+
+```sql
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS parking_slots (
+      slot_id INTEGER PRIMARY KEY,
+      label TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'available'
+            CHECK (status IN ('available', 'occupied'))
+);
+
+CREATE TABLE IF NOT EXISTS parking_sessions (
+      session_id INTEGER PRIMARY KEY,
+      registration TEXT NOT NULL,
+      slot_id INTEGER NOT NULL REFERENCES parking_slots(slot_id),
+      entry_at TEXT NOT NULL,
+      exit_at TEXT,
+      duration_seconds INTEGER,
+      fee_minor_units INTEGER,
+      CHECK (duration_seconds IS NULL OR duration_seconds >= 0),
+      CHECK (fee_minor_units IS NULL OR fee_minor_units >= 0)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_session_per_slot
+      ON parking_sessions(slot_id) WHERE exit_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_session_per_vehicle
+      ON parking_sessions(registration) WHERE exit_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS sessions_by_registration
+      ON parking_sessions(registration);
+```
+
+`fee_minor_units` stores money as an integer in the smallest currency unit (for example, cents). This avoids floating-point rounding errors. Keep the currency and the hourly rate in application configuration, or add a rate table if rates need to change over time. The session should retain the rate used for its charge if historical invoices must be reproducible.
+
+## 26.2 Python Example
+
+This example uses only Python's standard library. It assumes the lot has already been configured with its slots. `rate_minor_units` is the charge for one hour, and any started hour is rounded up to a full hour with a one-hour minimum.
+
+```python
+import math
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+
+
+@contextmanager
+def write_transaction(connection):
+      """Serialize a write decision and commit or roll it back as one unit."""
+      connection.execute("BEGIN IMMEDIATE")
+      try:
+            yield
+      except Exception:
+            connection.rollback()
+            raise
+      else:
+            connection.commit()
+
+
+def open_database(path="parking.db"):
+      connection = sqlite3.connect(path, timeout=10, isolation_level=None)
+      connection.row_factory = sqlite3.Row
+      connection.execute("PRAGMA foreign_keys = ON")
+      return connection
+
+
+def availability(connection):
+      row = connection.execute(
+            "SELECT COUNT(*) AS available "
+            "FROM parking_slots WHERE status = 'available'"
+      ).fetchone()
+      return row["available"]
+
+
+def park_vehicle(connection, registration):
+      registration = " ".join(registration.upper().split())
+      with write_transaction(connection):
+            slot = connection.execute(
+                  "SELECT slot_id FROM parking_slots "
+                  "WHERE status = 'available' ORDER BY slot_id LIMIT 1"
+            ).fetchone()
+            if slot is None:
+                  raise ValueError("Parking lot is full")
+
+            entry_at = datetime.now(timezone.utc).isoformat()
+            connection.execute(
+                  "INSERT INTO parking_sessions (registration, slot_id, entry_at) "
+                  "VALUES (?, ?, ?)",
+                  (registration, slot["slot_id"], entry_at),
+            )
+            connection.execute(
+                  "UPDATE parking_slots SET status = 'occupied' WHERE slot_id = ?",
+                  (slot["slot_id"],),
+            )
+      return {"registration": registration, "slot_id": slot["slot_id"], "entry_at": entry_at}
+
+
+def checkout_vehicle(connection, registration, rate_minor_units):
+      registration = " ".join(registration.upper().split())
+      exit_at = datetime.now(timezone.utc)
+
+      with write_transaction(connection):
+            session = connection.execute(
+                  "SELECT session_id, slot_id, entry_at FROM parking_sessions "
+                  "WHERE registration = ? AND exit_at IS NULL",
+                  (registration,),
+            ).fetchone()
+            if session is None:
+                  raise ValueError("No active parking session for this vehicle")
+
+            entry_at = datetime.fromisoformat(session["entry_at"])
+            duration_seconds = max(0, math.ceil((exit_at - entry_at).total_seconds()))
+            billable_hours = max(1, (duration_seconds + 3599) // 3600)
+            fee_minor_units = billable_hours * rate_minor_units
+
+            connection.execute(
+                  "UPDATE parking_sessions "
+                  "SET exit_at = ?, duration_seconds = ?, fee_minor_units = ? "
+                  "WHERE session_id = ?",
+                  (exit_at.isoformat(), duration_seconds, fee_minor_units, session["session_id"]),
+            )
+            connection.execute(
+                  "UPDATE parking_slots SET status = 'available' WHERE slot_id = ?",
+                  (session["slot_id"],),
+            )
+
+      return {
+            "registration": registration,
+            "slot_id": session["slot_id"],
+            "duration_seconds": duration_seconds,
+            "billable_hours": billable_hours,
+            "fee_minor_units": fee_minor_units,
+      }
+```
+
+Example use after creating the tables and inserting the lot's slot rows:
+
+```python
+connection = open_database()
+print(f"Available before entry: {availability(connection)}")
+
+ticket = park_vehicle(connection, "KBC 456B")
+print(f"Parked in slot {ticket['slot_id']}")
+
+receipt = checkout_vehicle(connection, "KBC 456B", rate_minor_units=5000)
+print(f"Duration: {receipt['duration_seconds']} seconds")
+print(f"Amount: {receipt['fee_minor_units']} minor units")
+print(f"Available after exit: {availability(connection)}")
+connection.close()
+```
+
+In production, handle duplicate active registrations and database errors at the user interface, record payment status separately from the calculated fee, and add authentication and audit history for staff actions. Availability shown before entry is a live estimate; the entry transaction makes the final slot assignment safely.
